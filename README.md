@@ -7,7 +7,27 @@ This repository aims to reproduce and optimize the implementation of the paper "
 - [SVF-2.8](https://github.com/SVF-tools/SVF/releases/tag/SVF-2.8)
 - [LLVM-14.0.6](https://github.com/llvm/llvm-project/releases/tag/llvmorg-14.0.6)
 
+Note that: In order to better utilize the advantages of SVF, we choose the newer SVF version than the paper.
+
+---
+
 # Uasge
+
+Compile Unias code:
+
+```sh
+mkdir build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j 10
+```
+
+Use Unias to conduct alias analysis:
+
+```sh
+cd build
+./bin/Unias @/path/to/bc.list -OutputDir=/path/to/output_dir -ThreadNum=8 2>&1 | tee runlog.txt
+```
 
 TBD
 
