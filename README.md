@@ -7,7 +7,9 @@ This repository aims to reproduce and optimize the implementation of the paper "
 - [SVF-2.8](https://github.com/SVF-tools/SVF/releases/tag/SVF-2.8)
 - [LLVM-14.0.6](https://github.com/llvm/llvm-project/releases/tag/llvmorg-14.0.6)
 
-Note that: In order to better utilize the advantages of SVF, we choose the newer SVF version than the paper.
+Note that: 
+- In order to better utilize the advantages of SVF, we choose the newer SVF version than the paper.
+- We applied extra patches to SVF-2.8 Release code.
 
 ---
 

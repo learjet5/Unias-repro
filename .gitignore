@@ -2,6 +2,14 @@
 .cache
 env.sh
 testcase*
+input*
+output*
 build*
 SVF*
 *.bak
+*.log
+logs
+*.dot
+svfir*
+*.list
+*.bc

@@ -5,6 +5,11 @@
 // #define DEBUG_HIGH_FREQ
 // #define ALLYES
 
+#include "SVF-LLVM/BasicTypes.h"
+#include "SVFIR/SVFType.h"
+#include "SVFIR/SVFValue.h"
+#include "llvm/IR/Instructions.h"
+#include <llvm/IR/Instruction.h>
 #ifdef ALLYES
 #define BASE_NUM 50
 #define O_BASE 50
@@ -27,7 +32,7 @@ using namespace SVF;
 using namespace llvm;
 using namespace std;
 
-extern llvm::cl::opt<std::string> SpecifyInput;
+// extern llvm::cl::opt<std::string> SpecifyInput;
 
 extern unordered_set<string> NewInitFuncstr;
 
@@ -42,14 +47,7 @@ extern unordered_map<NodeID, unordered_map<SVFStmt*, unordered_set<NodeID>>> phi
 extern unordered_map<NodeID, unordered_map<SVFStmt*, unordered_set<NodeID>>> selectIn;
 extern unordered_map<NodeID, unordered_map<SVFStmt*, unordered_set<NodeID>>> selectOut;
 
-extern unordered_set<NodeID> traceNodes;
-extern unordered_set<const CallInst*> traceiCalls;
-
-extern unordered_set<const Function*> SELinuxfuncs;
-extern unordered_set<NodeID> SELinuxNodes;
-extern unordered_set<const CallInst*> SELinuxicalls;
-
-extern unordered_map<const Type*, unordered_set<Function*>> type2funcs;
+// extern unordered_map<const SVFType*, unordered_set<const SVFFunction*>> type2funcs;
 
 extern unordered_map<string, unordered_map<u32_t, unordered_set<PAGEdge*>>> typebasedShortcuts;
 extern unordered_map<string, unordered_map<u32_t, unordered_set<unordered_set<PAGEdge*>*>>> additionalShortcuts;
@@ -60,11 +58,11 @@ extern unordered_map<PAGNode*, PAGEdge*> gepIn;
 extern unordered_map<const PAGEdge*, long> gep2byteoffset;
 extern unordered_set<const PAGEdge*> variantGep;
 
-extern unordered_map<Value*, Module*> value2Module;
+extern unordered_map<const Value*, const Module*> value2Module;
 
 extern unordered_map<StructType*, string> deAnonymousStructs;
 
-extern unordered_map<const CallInst*, unordered_set<Function*>> callgraph;
+extern unordered_map<const CallInst*, unordered_set<const Function*>> callgraph;
 extern unordered_map<NodeID, unordered_set<NodeID>> Real2Formal;
 extern unordered_map<NodeID, unordered_set<NodeID>> Formal2Real;
 extern unordered_map<NodeID, unordered_set<NodeID>> Ret2Call;
@@ -81,8 +79,10 @@ void setupPhiEdges(SVFIR* pag);
 
 void setupSelectEdges(SVFIR* pag);
 
+string printVal(const SVFValue* val);
 string printVal(const Value* val);
 
+string printType(const SVFType* val);
 string printType(const Type* val);
 
 string getStructName(StructType* sttype);
@@ -91,13 +91,14 @@ bool checkIfAddrTaken(SVFIR* pag, PAGNode* node);
 
 void addSVFAddrFuncs(SVFModule* svfModule, SVFIR* pag);
 
+StructType* ifPointToStruct(const SVFType* tp);
 StructType* ifPointToStruct(const Type* tp);
 
 void handleAnonymousStruct(SVFModule* svfModule, SVFIR* pag);
 
-long varStructVisit(GEPOperator* gepop, DataLayout* DL);
+long varStructVisit(GEPOperator* gepop, const DataLayout* DL);
 
-long regularStructVisit(StructType* sttype, s32_t idx, PAGEdge* gep, DataLayout* DL);
+long regularStructVisit(StructType* sttype, s64_t idx, PAGEdge* gep, const DataLayout* DL);
 
 void getSrcNodes(PAGNode* node, unordered_set<PAGNode*> &visitedNodes);
 
@@ -130,18 +131,37 @@ unsigned getStructOriginalElemNum(const StructType *stType);
 
 int64_t getGepIndexValue(const GetElementPtrInst* gepInst, unsigned i);
 
-Module* getModuleFromValue(Value *val);
+const Module* getModuleFromValue(const SVFValue *val);
+const Module* getModuleFromValue(const Value *val);
 
-u64_t getTypeSize(DataLayout* DL, const Type* type);
-u64_t getTypeSize(DataLayout* DL, const StructType *sty, u32_t field_idx);
-u64_t getFieldOffset(DataLayout* DL, const StructType *sty, u32_t field_idx);
+u64_t getTypeSize(const DataLayout* DL, const Type* type);
+u64_t getTypeSize(const DataLayout* DL, const StructType *sty, u32_t field_idx);
+u64_t getFieldOffset(const DataLayout* DL, const StructType *sty, u32_t field_idx);
 
 string printTypeWithSize(Type* type, const DataLayout& DL);
 
-void printGVType(SVFIR* pag, GlobalVariable* gv);
+void printGVType(SVFIR* pag, const SVFGlobalValue* gv);
+void printGVType(SVFIR* pag, const GlobalVariable* gv);
 
 bool checkIfProtectable(PAGNode* pagnode);
 
 bool pairCompare(const std::pair<s64_t, std::string>& a, const std::pair<s64_t, std::string>& b);
+
+// For conversion.
+const Type* getLLVMType(const SVFType* tp);
+
+const Value* getLLVMValue(const SVFValue* val);
+
+const SVFType* getSVFType(const Type* tp);
+
+const SVFValue* getSVFValue(const Value* val);
+
+const llvm::GlobalVariable* getLLVMGlobalVariable(const SVFGlobalValue* gv);
+
+const llvm::Function* getLLVMFunction(const SVFFunction* func);
+
+const llvm::Instruction* getLLVMInstruction(const SVFInstruction* inst);
+
+const llvm::CallInst* getLLVMCallInst(const SVFCallInst *inst);
 
 #endif
