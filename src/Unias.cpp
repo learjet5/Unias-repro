@@ -5,7 +5,6 @@
 #include "SVFIR/SVFFileSystem.h"
 #include "WPA/Andersen.h"
 #include "Util/CommandLine.h"
-#include "Util/Options.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Verifier.h"
@@ -28,80 +27,145 @@
 
 #include "include/UniasAlgo.hpp"
 #include "include/Util.hpp"
+#include "include/UtilLLVM.hpp"
 
 using namespace llvm;
 using namespace SVF;
 
+// 
 // Command line parameters.
+// 
 // cl::list<std::string> InputFilenames(
 //     cl::Positional, cl::OneOrMore, cl::desc("<input bitcode files>"));
 
-// cl::opt<unsigned> VerboseLevel(
-//     "verbose-level", cl::desc("Print information at which verbose level"),
-//     cl::init(0));
-
-// static llvm::cl::opt<std::string> SVFIRJsonInput("SVFIRJsonInput",
-//     llvm::cl::desc("SVFIRJsonInput"), llvm::cl::init(""));
-
-// static llvm::cl::opt<std::string> SVFIRJsonOutput("SVFIRJsonOutput",
-//     llvm::cl::desc("SVFIRJsonOutput"), llvm::cl::init(""));
-
-// static llvm::cl::opt<std::string> OutputDir("OutputDir",
-//     llvm::cl::desc("OutputDir"), llvm::cl::init(""));
-
-// static llvm::cl::opt<std::string> CallGraphPath("CallGraphPath",
-//     llvm::cl::desc("CallGraphPath"), llvm::cl::init(""));
-
-// static llvm::cl::opt<size_t> ThreadNum("ThreadNum",
-//     llvm::cl::desc("ThreadNum"), llvm::cl::init(1));
-
-// static llvm::cl::opt<std::string> SpecificGV("SpecificGV",
-//     llvm::cl::desc("Specify the gv"), llvm::cl::init(""));
-
 const Option<std::string> SVFIRJsonInput("SVFIRJsonInput",
-    "SVFIRJsonInput", "");
+    "Load SVFIR from this Json file.", "");
 
 const Option<std::string> SVFIRJsonOutput("SVFIRJsonOutput",
-    "SVFIRJsonOutput", "");
+    "Store SVFIR to this Json file.", "");
 
 const Option<std::string> CallGraphPath("CallGraphPath",
-    "CallGraphPath", "");
+    "Load CallGraph from this path.", "");
 
 const Option<std::string> OutputDir("OutputDir",
-    "OutputDir", "");
+    "Output Unias results to this dir.", "");
 
 const Option<u32_t> ThreadNum("ThreadNum",
-    "ThreadNum", 1);
+    "Number of concurrent Unias threads.", 1);
 
 const Option<std::string> SpecificGV("SpecificGV",
-    "Specify the gv", "");
+    "Specify the name of a single GlobalVariable.", "");
 
-// GlobalVariable* --> SVFGlobalValue*
-unordered_set<SVFGlobalValue*> analysisScope;
+const Option<std::string> InputNewInitFuncs("InputNewInitFuncs",
+    "Provide \'Init Functions\'.", "");
 
-UniasAlgo* performAnalysis(const SVFGlobalValue* gv, SVFIR* pag){
-    // 每分析一个GV，就构建一个UniasAlgo实例。
-    auto* unias = new UniasAlgo();
-    unias->pag = pag;
-    auto llvmGv = getLLVMGlobalVariable(gv);
-    auto curLayout = llvmGv->getParent()->getDataLayout();
-    unias->DL = &curLayout;
-    for(auto node : blackNodes){
-        unias->blackNodes.insert(node);
+const Option<u32_t> VerboseLevel("VerboseLevel",
+    "Print information at which verbose level.", 0); // To use.
+
+// 
+// Preparation Phase.
+// 
+
+// Unias分析前的初始化。这里面很多操作都值得分析。
+void initialize(SVFIR* pag, SVFModule* svfModule){
+    if(CallGraphPath() != ""){
+        readCallGraph(CallGraphPath(), svfModule, pag);
+        setupCallGraph(pag);
     }
-    PNwithOffset firstLayer(0 ,false);
-    unias->AnalysisStack.push(firstLayer); // 分析栈中初始节点(os=0, cf=false)。
-    // find the variable you want to query on the graph
-    auto pgnode = pag->getGNode(pag->getValueNode(gv));
-    unias->taskNode = pgnode;
-    unias->ComputeAlias(pgnode, false);
-    // Production `flows-to` is false, `I-Alias` is true
-    // For global variables, we use `flows-to`
-    // Aliases will be unias.Aliases, it's a field sensitive map
-    // where Aliases[0] shows the aliases of field indice 0
-    return unias;
+    getBlackNodes(pag);
+    setupPhiEdges(pag);
+    setupSelectEdges(pag);
+    handleAnonymousStruct(svfModule, pag);
+    collectByteoffset(pag); // Sikpped wierd GepStmts. (Stuck at somewhere. 2024.10.25)
+    setupStores(pag);
+    processCastSites(pag);
+    processCastMap(pag);
+    errs() << "shortcuts setup in Unias! " << "\n\n";
 }
 
+// GlobalVariable* --> SVFGlobalValue*
+unordered_set<const SVFGlobalValue*> analysisScope;
+
+// 全量GV分析范围。
+void getAnalysisScope(SVFModule* svfModule){
+    // Use SVFModule::GlobalSet to retrieve llvm::GlobalVariable. (more raw than GlobalDefToRepMap)
+    for(auto ii = svfModule->global_begin(), ie = svfModule->global_end(); ii != ie; ii++){
+        auto gv = *ii;
+        // TODO: 这里的筛选标准再研究下。还应筛选gv是writeable的。但guoren可能按System.map里的数据段也筛过了。
+        auto llvmGv = getLLVMGlobalVariable(gv);
+        if(!llvmGv->isConstant() && !llvmGv->hasSection()){
+            auto gvRep = getSVFGlobalValueRep(gv);
+            analysisScope.insert(gvRep);
+        }
+    }
+    errs() << "analysis scope size: " << analysisScope.size() << "\n";
+}
+
+// 直接从一个包含GV名称的文件中，获取分析范围。（Added by LHY）
+void getExistingAnalysisScope(SVFModule* svfModule) {
+    // For Linux-5.14, 12089 GVs should be analyzed.
+    string InputScopename = "/mnt/sdc/lhy_tmp/spa/Uniasss/analyze/Linux-5.14-finalscope";
+    ifstream fin(InputScopename);
+    if (!fin) {
+        errs() << "Fail to open " << InputScopename << "!\n";
+        exit(0);
+    }
+    set<string> rawScope;
+    string tmp;
+    while(!fin.eof()){
+        fin >> tmp;
+        rawScope.insert(tmp);
+    }
+    errs() << "Target GV rawScope size: " << rawScope.size() << "\n";
+
+    for(auto ii = svfModule->global_begin(), ie = svfModule->global_end(); ii != ie; ii++){
+        auto gv = *ii;
+        auto gvRep = getSVFGlobalValueRep(gv);
+        if(rawScope.find(gvRep->getName()) != rawScope.end()){
+            analysisScope.insert(gvRep);
+        }
+    }
+    errs() << "Current analysisScope size: " << analysisScope.size() << "\n";
+
+    // 注：使用getSVFGlobalValueRep后，analysisScope里就不会有GV重名的情况了，即每个gvname只分析一个实体。
+}
+
+bool getSpecificGV(SVFModule* svfModule, string name) {
+    for(auto ii = svfModule->global_begin(), ie = svfModule->global_end(); ii != ie; ii++){
+        auto gv = *ii;
+        auto gvRep = getSVFGlobalValueRep(gv);
+        auto llvmGv = getLLVMGlobalVariable(gv);
+        if(!llvmGv->isConstant() && !llvmGv->hasSection()){
+            if(gvRep->getName()==name) {
+                analysisScope.insert(gvRep);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// 筛选内核中的初始化函数，用于辅助判断是否protectable
+unordered_set<string> NewInitFuncstr; // Also used for checkIfProtectable().
+void getNewInitFuncs(){
+    string NewInitFuncsFilePath = InputNewInitFuncs();
+    if(NewInitFuncsFilePath.size() == 0) {
+        NewInitFuncsFilePath = "/mnt/sdc/lhy_tmp/spa/Uniasss/analyze/Linux-5.14-NewInitFunctions";
+    }
+    ifstream fin(NewInitFuncsFilePath);
+    string tmp;
+    while(!fin.eof()){
+        fin >> tmp;
+        NewInitFuncstr.insert(tmp);
+    }
+    fin.close();
+    errs() << "NewInitFuncs: " << NewInitFuncstr.size() << "\n";
+}
+
+
+// 
+// Analysis Phase.
+// 
 
 // Alias分析结果后处理。（Added by LHY）
 // 遍历Unias别名分析结果，记录Protect/Written属性。
@@ -249,6 +313,29 @@ void postProcessResults_old(UniasAlgo* unias, const SVFGlobalValue* gv, ofstream
     fout.flush();
 }
 
+UniasAlgo* performAnalysis(const SVFGlobalValue* gv, SVFIR* pag){
+    // 每分析一个GV，就构建一个UniasAlgo实例。
+    auto* unias = new UniasAlgo();
+    unias->pag = pag;
+    auto llvmGv = getLLVMGlobalVariable(gv);
+    auto curLayout = llvmGv->getParent()->getDataLayout();
+    unias->DL = &curLayout;
+    for(auto node : blackNodes){
+        unias->blackNodes.insert(node);
+    }
+    PNwithOffset firstLayer(0 ,false);
+    unias->AnalysisStack.push(firstLayer); // 分析栈中初始节点(os=0, cf=false)。
+    // find the variable you want to query on the graph
+    auto pgnode = pag->getGNode(pag->getValueNode(gv));
+    unias->taskNode = pgnode;
+    unias->ComputeAlias(pgnode, false);
+    // Production `flows-to` is false, `I-Alias` is true
+    // For global variables, we use `flows-to`
+    // Aliases will be unias.Aliases, it's a field sensitive map
+    // where Aliases[0] shows the aliases of field indice 0
+    return unias;
+}
+
 void eachThread(SVFIR* pag, const SVFGlobalValue* gv, ofstream &fout){
     if (ThreadNum() == 1) printGVType(pag, gv); // For debug. // 但多线程同时往errs()里写东西可能有问题。
     
@@ -291,7 +378,7 @@ public:
                         const SVFGlobalValue* gv = this->tasks.front();
                         this->tasks.pop();
                         queueMutex.unlock();
-                        eachThread(this->pag, gv, fout);
+                        eachThread(this->pag, gv, fout); // 一个线程分析一个GV。
                     }else{
                         stop = true;
                         queueMutex.unlock();
@@ -317,127 +404,15 @@ private:
     SVFIR* pag;
 };
 
-void analysis_unias(SVFModule *M, SVFIR* pag, size_t threadcount){
+void analysisUnias(SVFModule *M, SVFIR* pag, size_t threadcount){
     std::queue<const SVFGlobalValue*> tasks;
     for(auto gv : analysisScope){
         tasks.push(gv);
     }
     
+    errs() << "[analysisUnias] ThreadPool starts working!\n";
     ThreadPool pool(threadcount, pag, tasks);
     pool.WaitAll();
-}
-
-// 这里面很多操作都值得分析。
-void initialize(SVFIR* pag, SVFModule* svfModule){
-    if(CallGraphPath() != ""){
-        readCallGraph(CallGraphPath(), svfModule, pag);
-        setupCallGraph(pag);
-    }
-    getBlackNodes(pag);
-    setupPhiEdges(pag);
-    setupSelectEdges(pag);
-    try {
-    // handleAnonymousStruct(svfModule, pag);
-    // addSVFAddrFuncs(svfModule, pag); // For KallGraph.
-    collectByteoffset(pag);
-    setupStores(pag);
-    processCastSites(pag);
-    processCastMap(pag);
-    handleAnonymousStruct(svfModule, pag);  // Stuck at somewhere from here. 2024.10.20
-    }
-    catch (const std::exception& e) {
-        // 捕获异常并输出异常信息
-        std::cout << "Exception caught: " << e.what() << std::endl;
-    }
-    errs() << "shortcuts setup in Unias! " << "\n\n";
-}
-
-// Useless now.
-unordered_map<const Value*, const CallInst*> calledmap;
-void setupICallValue(SVFModule* svfModule){
-    for(auto func : *svfModule){
-        auto funcValue = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(func);
-        if(!LLVMUtil::getLLVMFunction(funcValue)) continue;
-        auto llvmFunc = LLVMUtil::getLLVMFunction(funcValue);
-        for(auto &bb : *(llvmFunc)){
-            for(auto &inst : bb){
-                if(auto ci = dyn_cast<CallInst>(&inst)){
-                    if(ci->isIndirectCall()){
-                        calledmap[ci->getCalledOperand()->stripPointerCasts()] = ci;
-                    }
-                }
-            }
-        }
-    }
-}
-
-// 全量GV分析范围。
-void getAnalysisScope(SVFModule* svfModule){
-    // Use SVFModule::GlobalSet to retrieve llvm::GlobalVariable.
-    for(auto ii = svfModule->global_begin(), ie = svfModule->global_end(); ii != ie; ii++){
-        auto gv = *ii;
-        auto llvmGv = getLLVMGlobalVariable(gv);
-        // TODO: 这里的筛选标准再研究下。还应筛选gv是writeable的。但guoren可能按System.map里的数据段也筛过了。
-        if(!llvmGv->isConstant() && !llvmGv->hasSection()){
-            analysisScope.insert(gv);
-        }
-    }
-    errs() << "analysis scope size: " << analysisScope.size() << "\n";
-}
-
-// 直接从一个包含GV名称的文件中，获取分析范围。（Added by LHY）
-void getExistingAnalysisScope(SVFModule* svfModule) {
-    // For Linux-5.14, 12089 GVs should be analyzed.
-    string InputScopename = "/mnt/sdc/lhy_tmp/spa/Uniasss/analyze/Linux-5.14-finalscope";
-    ifstream fin(InputScopename);
-    if (!fin) {
-        errs() << "Fail to open " << InputScopename << "!\n";
-        exit(0);
-    }
-    set<string> rawScope;
-    string tmp;
-    while(!fin.eof()){
-        fin >> tmp;
-        rawScope.insert(tmp);
-    }
-    errs() << "GV rawScope size: " << rawScope.size() << "\n";
-
-    for(auto ii = svfModule->global_begin(), ie = svfModule->global_end(); ii != ie; ii++){
-        auto gv = *ii;
-        if(rawScope.find(gv->getName()) != rawScope.end()){
-            analysisScope.insert(gv);
-        }
-    }
-    errs() << "analysis scope size: " << analysisScope.size() << "\n";
-
-    // 看下analysisScope里的GV有没有重名实体（实际上会有很多，比如key_type_asymmetric就有三个实体，不理解为什么）
-    // TODO: 重名的gv，用gv->hasInitializer()筛选下。确保每个gvname只分析一个实体。
-    set<string> recordedNames;
-    for(auto gv : analysisScope){
-        // gv->isDeclaration()
-        // gv->isDefinitionExact()
-        // gv->hasExactDefinition()
-        string name = gv->getName();
-        if(recordedNames.find(name) != recordedNames.end()) {
-            errs() << "Find repeated object instance for GV name: " << name << "\n";
-        } else {
-            recordedNames.insert(name);
-        }
-    }
-}
-
-bool getSpecificGV(SVFModule* svfModule, string name) {
-    for(auto ii = svfModule->global_begin(), ie = svfModule->global_end(); ii != ie; ii++){
-        auto gv = *ii;
-        auto llvmGv = getLLVMGlobalVariable(gv);
-        if(!llvmGv->isConstant() && !llvmGv->hasSection()){
-            if(gv->getName()==name) {
-                analysisScope.insert(gv);
-                return true;
-            }
-        }
-    }
-    return false;
 }
 
 int main(int argc, char **argv) {
@@ -502,9 +477,10 @@ int main(int argc, char **argv) {
     //     return 1;
     // }
 
-    errs() << "Analysis Scope: " << analysisScope.size() << "\n"; errs().flush();
-    analysis_unias(svfModule, pag, ThreadNum());
+    errs() << "\n[Analysis Phase] Analysis Scope: " << analysisScope.size() << "\n"; errs().flush();
     
-    errs() << "All Analysis finished!\n";
+    analysisUnias(svfModule, pag, ThreadNum());
+    
+    errs() << "All Unias Analysis finished!\n";
 	return 0;
 }

@@ -1,16 +1,6 @@
 #include "../include/Util.hpp"
-#include "Graphs/IRGraph.h"
-#include "SVF-LLVM/BasicTypes.h"
-#include "SVF-LLVM/LLVMModule.h"
-#include "SVF-LLVM/LLVMUtil.h"
-#include "SVFIR/SVFValue.h"
-#include "llvm/IR/DataLayout.h"
-#include "llvm/IR/GlobalVariable.h"
-#include "llvm/IR/Instructions.h"
-#include <algorithm>
-#include <cassert>
-#include <cstdint>
-#include <llvm/Support/raw_ostream.h>
+#include "../include/UtilLLVM.hpp"
+#include "llvm/Support/raw_ostream.h"
 
 // llvm::cl::opt<std::string> SpecifyInput("SpecifyInput",
 //     llvm::cl::desc("specify input such as indirect calls or global variables"), llvm::cl::init(""));
@@ -237,39 +227,6 @@ void setupSelectEdges(SVFIR* pag){
     errs() << "[initialize] Finish setupSelectEdges!\n";
 }
 
-string printVal(const SVFValue* val) {
-    auto v = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(val);
-    return printVal(v);
-}
-string printVal(const Value* val){
-	string tmp;
-    raw_string_ostream rso(tmp);
-    if(isa<Function>(val)){
-        return val->getName().str();
-    }
-    val->print(rso);
-    // if(rso.str().length() > 500){
-    //     return "too long";
-    // }else{
-        return rso.str();
-    // }
-}
-
-string printType(const SVFType* val) {
-    auto v = LLVMModuleSet::getLLVMModuleSet()->getLLVMType(val);
-    return printType(v);
-}
-string printType(const Type* val){
-	string tmp;
-    raw_string_ostream rso(tmp);
-    val->print(rso);
-    if(rso.str().length() > 500){
-        return "too long";
-    }else{
-        return rso.str();
-    }
-}
-
 // [tool] 以一种硬编码的方式计算Type的字节数大小，供很多其他工具函数调用。
 // 虽然这样做没考虑alignment，但在DataLayout不可用的情况下也可回退到此处。
 uint64_t getManualTypeSize(Type *Ty) {
@@ -378,26 +335,6 @@ bool checkIfAddrTaken(SVFIR* pag, PAGNode* node){
 // 	}
 // }
 
-StructType* ifPointToStruct(const SVFType* tp) {
-    auto llvmTp = LLVMModuleSet::getLLVMModuleSet()->getLLVMType(tp);
-    return ifPointToStruct(llvmTp);
-}
-StructType* ifPointToStruct(const Type* tp){
-    if(tp && tp->isPointerTy() && (tp->getNumContainedTypes() > 0)){
-        if(auto ret = dyn_cast<StructType>(tp->getNonOpaquePointerElementType())){
-            return ret;
-        }else if(auto ret = dyn_cast<ArrayType>(tp->getNonOpaquePointerElementType())){
-            while(isa<ArrayType>(ret->getArrayElementType())){
-                ret = dyn_cast<ArrayType>(ret->getArrayElementType());
-            }
-            if(auto st = dyn_cast<StructType>(ret->getArrayElementType())){
-                return st;
-            }
-        }
-    }
-    return nullptr;
-}
-
 // [initialize]
 void handleAnonymousStruct(SVFModule* svfModule, SVFIR* pag){
     errs() << "[initialize] Exec handleAnonymousStruct...\n";
@@ -406,13 +343,12 @@ void handleAnonymousStruct(SVFModule* svfModule, SVFIR* pag){
     for(auto ii = svfModule->global_begin(), ie = svfModule->global_end(); ii != ie; ii++){
         auto gv = *ii;
         if(auto gvtype = ifPointToStruct(gv->getType())){
-            errs() << "  Cur GV: " << gv->getName() << "\n";
+            // errs() << "  Cur PointToStruct GV: " << gv->getName() << "\n";
             if(getStructName(gvtype) == ""){
                 AnonymousTypeGVs[gvtype].emplace(gv);
             }
         }
     }
-    errs() << "[initialize] Finish handleAnonymousStruct (GV)!\n";
     for(auto edge : pag->getSVFStmtSet(PAGEdge::Copy)){
         if(edge->getSrcNode()->getType() && edge->getDstNode()->getType()){
             auto srcType = ifPointToStruct(edge->getSrcNode()->getType());
@@ -432,7 +368,6 @@ void handleAnonymousStruct(SVFModule* svfModule, SVFIR* pag){
             }
         }
     }
-    errs() << "[initialize] Finish handleAnonymousStruct (CopyEdge)!\n";
     for(auto const edge : pag->getSVFStmtSet(PAGEdge::Gep)){
         const auto gepstmt = dyn_cast<GepStmt>(edge);
         if(auto callinst = dyn_cast<CallInst>(getLLVMValue(edge->getValue()))){
@@ -460,7 +395,6 @@ void handleAnonymousStruct(SVFModule* svfModule, SVFIR* pag){
             }
         }
     }
-    errs() << "[initialize] Finish handleAnonymousStruct GepEdge()!\n";
     deAnonymous = true;
     errs() << "[initialize] Finish handleAnonymousStruct!\n";
 }
@@ -468,6 +402,7 @@ void handleAnonymousStruct(SVFModule* svfModule, SVFIR* pag){
 // [tool] 用于collectByteoffset。
 // 
 long varStructVisit(GEPOperator* gepop, const DataLayout* DL){
+    errs() << "  [varStructVisit]\n";
     if(!DL) {
         errs() << "varStructVisit: DataLayout is not available!\n";
     }
@@ -508,6 +443,7 @@ long varStructVisit(GEPOperator* gepop, const DataLayout* DL){
 // 根据给定GEP边的结构体类型和成员index，计算其byteOffset并返回。
 // 重点重构对象！
 long regularStructVisit(StructType* sttype, s64_t idx, PAGEdge* gep, const DataLayout* DL){
+    errs() << "  [regularStructVisit]\n";
     if(!DL) {
         errs() << "regularStructVisit: DataLayout is not available!\n"; // Triggered.
     }
@@ -537,12 +473,14 @@ long regularStructVisit(StructType* sttype, s64_t idx, PAGEdge* gep, const DataL
     // 理解：
     if(idx - lastOriginalType >= 0){
         auto svfEmbType = stinfo->getOriginalElemType(lastOriginalType);
-        auto embType = getLLVMType(svfEmbType);
-        while(embType && embType->isArrayTy()){
-            embType = embType->getArrayElementType();
-        }
-        if(embType && embType->isStructTy()){
-            ret += regularStructVisit(const_cast<StructType*>(dyn_cast<StructType>(embType)), idx - lastOriginalType, gep, DL);
+        if(svfEmbType) {
+            auto embType = getLLVMType(svfEmbType);
+            while(embType && embType->isArrayTy()){
+                embType = embType->getArrayElementType();
+            }
+            if(embType && embType->isStructTy()){
+                ret += regularStructVisit(const_cast<StructType*>(dyn_cast<StructType>(embType)), idx - lastOriginalType, gep, DL);
+            }
         }
     }
     // 记录全局变量并返回byteOffset值。
@@ -646,11 +584,25 @@ void debugGEP(const PAGEdge* edge) {
 // 实现field-sensitive的非常重要的函数，里面还调用了一些复杂的工具函数。（非递归函数）
 // 结构体嵌套以及多级index的gep指令是怎么处理的？一般就两个"type+idx"，然后多个gep指令来构成多级索引。
 void collectByteoffset(SVFIR* pag){
-    // 遍历PAG中的所有GEP边。
-    errs() << "[initialize] Exec collectByteoffset...\n";
-    errs() << "GEP Edges size: " << pag->getSVFStmtSet(PAGEdge::Gep).size() << "\n";
+    // 遍历PAG中的所有GEP边。将其转化为对应的LLVMInstruction并进行相关处理。
+    // errs() << "[collectByteoffset] GEP Edges size: " << pag->getSVFStmtSet(PAGEdge::Gep).size() << "\n";
     for(auto const edge : pag->getSVFStmtSet(PAGEdge::Gep)){
-        errs() << "  Cur GEP: " << edge->getEdgeID() << "\n";
+        errs() << "[collectByteoffset] Cur GEP: " << edge->getEdgeID() << "\n";
+        // 此处PAGEdge edge其实都应该是GepStmt类型。
+        const auto gepstmt = dyn_cast<GepStmt>(edge);
+        if(!gepstmt){
+            errs() << "[collectByteoffset] Can't get gepstmt!\n"; // not reached.
+            continue;
+        }
+        // errs()<<"  gepstmt: "<<gepstmt->toString()<<"\n";
+        // 理解：edge是SVFStatement，其配套了一个SVFValue。我们希望由此得到LLVM Instruction。
+        auto llvmValue = getLLVMValue(edge->getValue());
+        if(!llvmValue) {
+            errs() << "[collectByteoffset] Can't get llvmValue for GepStmt!\n"; // not reached.
+            continue;
+        }
+        // errs()<<"  llvmValue: "; llvmValue->print(errs()); errs()<<"\n";
+
         // 获取当前GEP边所在module的DataLayout。
         const Module* mod = getModuleFromValue(edge->getValue());
         const DataLayout* DL;
@@ -658,18 +610,28 @@ void collectByteoffset(SVFIR* pag){
             DL = &mod->getDataLayout();
         } else {
             DL = nullptr;
-            errs() << "getModuleFromValue failed: "<< printVal(edge->getValue()) <<"\n"; // Triggered.
+            errs() << "[collectByteoffset] Fail to getModuleFromValue: "<< printVal(edge->getValue()) <<"\n"; // Triggered.
+            continue;
             // 这主要会影响：regularStructVisit、varStructVisit、标量数组的处理。本质上还是影响了getTypeSize函数。
         }
         gepIn[edge->getDstNode()] = edge;
-        const auto gepstmt = dyn_cast<GepStmt>(edge);
-        // TODO: 是否选用edge->getInst()。
-        const auto gepInst = dyn_cast<GetElementPtrInst>(getLLVMValue(edge->getValue())); // 使用gepInst时检查下null就好。
+        
+        // auto svfGepInst = edge->getInst();
+        // if(!svfGepInst) {
+        //     errs() << "[collectByteoffset] Can't get svfGepInst!\n"; // reachable. 说明GepStmt相应的SVFValue也许不是一个SVFInstruction。
+        //     continue;
+        // }
+        // errs() << "  svfGepInst: " << svfGepInst->toString() << "\n";
+
+        // const auto gepInst = dyn_cast<GetElementPtrInst>(llvmValue); // 这样获取gepInst极有可能得到nullptr。
+        // errs() << "  gepInst: "; gepInst->print(errs()); errs()<<"\n"; // Problem: 空!
+
         // 处理getelementptr指令被嵌在call指令中的情况：需要借助gotStructSrc去推断base的类型。因为mem函数传参时常常会有类型转换。
-        if(auto callinst = dyn_cast<CallInst>(getLLVMInstruction(edge->getInst()))){
+        if(auto callInst = dyn_cast<CallInst>(llvmValue)){
+            errs() << "  Enter branch (getelementptr in callInst).\n";
             // memset, memcpy, llvm.memmove.p0i8.p0i8.i64, llvm.memset.p0i8.i64, llvm.memcpy.p0i8.p0i8.i64
             // 函数名不包含memset才能进入if body。
-            if(callinst->getCalledFunction()->getName().find("memset") == string::npos){
+            if(callInst->getCalledFunction()->getName().find("memset") == string::npos){
                 unordered_set<PAGNode*> visitedNodes; // 仅用于getSrcNodes函数。
                 if(auto sttype = gotStructSrc(edge->getSrcNode(), visitedNodes)){ // 通过Copy边去尝试推断结构体类型。
                     // 常规的结构体成员访问。
@@ -687,92 +649,105 @@ void collectByteoffset(SVFIR* pag){
                     }
                 }
             }
+            continue;
         }
-        // 处理正常的、单独的getelementptr指令。
-        else{
-            if(auto type = edge->getSrcNode()->getType()){
-                // 要求Field边的Src节点是结构体指针类型。根据base的type和GEP的index计算byteOffset。
-                auto llvmType = getLLVMType(type);
-                if(llvmType->isPointerTy() && llvmType->getNumContainedTypes() > 0){
-                    auto elemType = llvmType->getPointerElementType();
-                    while(elemType && elemType->isArrayTy()){
-                        elemType = elemType->getArrayElementType();
-                    }
-                    // elemType是从GEP边SrcNode拿到的结构体/数组的基础类型，然后根据idx计算byteOffset。
-                    if(elemType){
-                        // 处理non-constant的成员访问。
-                        if(!gepstmt->isConstantOffset()){
-                            // contains non-const index
-                            if(elemType->isSingleValueType()){
-                                // gep i8*, i64 0, %var
-                                // 这种情况下，处理的是标量数组索引的Gep边。索引值为variant。
-                                variantGep.insert(edge);
-                                // debugGEP(edge);
-                            }else if(elemType->isStructTy()){
-                                if(gepstmt->isVariantFieldGep()){
-                                    // gep struct.A*, %var
-                                    // 这种情况下，处理的是结构体数组索引的Gep边。索引值为variant。
-                                    gep2byteoffset[edge] = 0;
-                                    // debugGEP(edge);
-                                }else{
-                                    // getelementptr %struct.acpi_pnp_device_id_list, %struct.acpi_pnp_device_id_list* %8, i64 0, i32 2, i64 %indvars.iv, i32 1
-                                    // 这种情况下，处理的是结构体成员访问的Gep边。某个子索引值为variant。
-                                    gep2byteoffset[edge] = varStructVisit(const_cast<GEPOperator*>(dyn_cast<GEPOperator>(getLLVMValue(edge->getValue()))), DL);
-                                    // debugGEP(edge);
-                                }
-                            }else{
-                                assert(false && "no ther case 1");
-                            }
+
+        // 处理正常的、单独的getelementptr操作。
+        auto svfType = edge->getSrcNode()->getType();
+        if(!svfType){
+            errs() << "[collectByteoffset] Can't get svvfType for GepStmt SrcNode!\n"; // Triggered.
+            continue;
+        }
+        auto llvmType = getLLVMType(svfType);
+        if(!llvmType){
+            errs() << "[collectByteoffset] Can't get llvmType for GepStmt SrcNode!\n"; // Triggered.
+            continue;
+        }
+        // 要求Field边的Src节点是结构体指针类型。根据base的type和GEP的index计算byteOffset。
+        if(llvmType->isPointerTy() && llvmType->getNumContainedTypes() > 0){
+            auto elemType = llvmType->getPointerElementType();
+            while(elemType && elemType->isArrayTy()){
+                elemType = elemType->getArrayElementType();
+            }
+            // elemType是从GEP边SrcNode拿到的结构体/数组的基础类型，然后根据idx计算byteOffset。
+            if(elemType){
+                // 处理non-constant的成员访问。
+                if(!gepstmt->isConstantOffset()){
+                    // contains non-const index
+                    if(elemType->isSingleValueType()){
+                        // gep i8*, i64 0, %var
+                        // 这种情况下，处理的是标量数组索引的Gep边。索引值为variant。
+                        variantGep.insert(edge);
+                        // debugGEP(edge);
+                    }else if(elemType->isStructTy()){
+                        if(gepstmt->isVariantFieldGep()){
+                            // gep struct.A*, %var
+                            // 这种情况下，处理的是结构体数组索引的Gep边。索引值为variant。
+                            gep2byteoffset[edge] = 0;
+                            // debugGEP(edge);
+                        }else{
+                            // getelementptr %struct.acpi_pnp_device_id_list, %struct.acpi_pnp_device_id_list* %8, i64 0, i32 2, i64 %indvars.iv, i32 1
+                            // 这种情况下，处理的是结构体成员访问的Gep边。某个子索引值为variant。
+                            gep2byteoffset[edge] = varStructVisit(const_cast<GEPOperator*>(dyn_cast<GEPOperator>(getLLVMValue(edge->getValue()))), DL);
+                            // debugGEP(edge);
                         }
-                        // 处理常量index的成员访问。
-                        else{
-                            if(elemType->isSingleValueType()){
-                                // 这种情况下，edge->getSrcNode()的类型是标量数组（可能是多维数组）。
-                                // gep2byteoffset[edge] = DL->getTypeStoreSize(type->getPointerElementType()) * gepstmt->accumulateConstantOffset();
-                                // 此处代码是错的：第一个乘数应该取elemType；第二个乘数试了几个case都是0。
-                                // gep2byteoffset[edge] = getManualTypeSize(type->getPointerElementType()) * gepstmt->accumulateConstantOffset(); 
-                                // 个人感觉这里也不能用SVF的GepStmt做分析，还是应该直接拿到GetElementPtrInst进行分析。
-                                // gep2byteoffset[edge] = getTypeSize(DL, elemType) * gepstmt->getConstantFieldIdx();
-                                // Anyways保守点就直接记录为0。相当于回退到array-insensitive，只访问数组第一个元素。
-                                if(gepInst) {
-                                    if(gepInst->getNumIndices()==1) { 
-                                        // 处理指针变量的加减法（可看作raw方式的数组索引）。
-                                        gep2byteoffset[edge] = getTypeSize(DL, elemType) * getGepIndexValue(gepInst, 0);
-                                    } else if(gepInst->getNumIndices()==2) {
-                                        // 处理普通的一维数组。
-                                        gep2byteoffset[edge] = getTypeSize(DL, elemType) * getGepIndexValue(gepInst, 1);
-                                    }
-                                    else if(gepInst->getNumIndices() > 2) {
-                                        // TODO: 处理多维数组。
-                                        gep2byteoffset[edge] = 0;
-                                    } else {
-                                        gep2byteoffset[edge] = 0;
-                                    }
-                                    // debugGEP(edge);
-                                }
-                                // errs() << "\nArray???: " << gep2byteoffset[edge] << "\t" << printVal(edge->getValue()) << "\n";
-                                // gepstmt->getLocationSet().dump(); errs() << "; " << getTypeSize(DL, elemType) << "\t" << gepstmt->getConstantFieldIdx() << "\n";
-                            }else if (elemType->isStructTy()){
-                                // 这种情况下，edge->getSrcNode()的类型是结构体或结构体数组。
-                                StructType* stType = dyn_cast<StructType>(elemType);
-                                s64_t idx = gepstmt->getConstantStructFldIdx();
-                                // errs()<<"gepstmt: "<<gepstmt->toString()<<"\n";
-                                gep2byteoffset[edge] = regularStructVisit(stType, idx, edge, DL);
-                                // debugGEP(edge);
-                            }else{
-                                assert(false && "no other case 2"); // Unias分析kernel不会走到这里。
-                            }
-                        }
+                    }else{
+                        assert(false && "no ther case 1");
                     }
-                }else{
-                    // 跑实验证明其实不太会跑到这个分支。
-                    errs() << printVal(edge->getValue()) << "\n";
+                }
+                // 处理常量index的成员访问。
+                else{
+                    if(elemType->isSingleValueType()){
+                        // 这种情况下，edge->getSrcNode()的类型是标量数组（可能是多维数组）。
+                        // gep2byteoffset[edge] = DL->getTypeStoreSize(type->getPointerElementType()) * gepstmt->accumulateConstantOffset();
+                        // 此处代码是错的：第一个乘数应该取elemType；第二个乘数试了几个case都是0。
+                        // gep2byteoffset[edge] = getManualTypeSize(type->getPointerElementType()) * gepstmt->accumulateConstantOffset(); 
+                        // 个人感觉这里也不能用SVF的GepStmt做分析，还是应该直接拿到GetElementPtrInst进行分析。
+                        // gep2byteoffset[edge] = getTypeSize(DL, elemType) * gepstmt->getConstantFieldIdx();
+                        // Anyways保守点就直接记录为0。相当于回退到array-insensitive，只访问数组第一个元素。
+                        const auto gepInst = dyn_cast<GetElementPtrInst>(llvmValue);
+                        if(!gepInst) {
+                            errs() << "[collectByteoffset] Can't get gepInst from llvmValue!\n"; // Triggered many times.
+                            continue;
+                        }
+                        if(gepInst) {
+                            if(gepInst->getNumIndices()==1) { 
+                                // 处理指针变量的加减法（可看作raw方式的数组索引）。
+                                gep2byteoffset[edge] = getTypeSize(DL, elemType) * getGepIndexValue(gepInst, 0);
+                            } else if(gepInst->getNumIndices()==2) {
+                                // 处理普通的一维数组。
+                                gep2byteoffset[edge] = getTypeSize(DL, elemType) * getGepIndexValue(gepInst, 1);
+                            }
+                            else if(gepInst->getNumIndices() > 2) {
+                                // TODO: 处理多维数组。
+                                gep2byteoffset[edge] = 0;
+                            } else {
+                                gep2byteoffset[edge] = 0;
+                            }
+                            // debugGEP(edge);
+                        }
+                        // errs() << "\nArray???: " << gep2byteoffset[edge] << "\t" << printVal(edge->getValue()) << "\n";
+                        // gepstmt->getLocationSet().dump(); errs() << "; " << getTypeSize(DL, elemType) << "\t" << gepstmt->getConstantFieldIdx() << "\n";
+                    }else if (elemType->isStructTy()){
+                        // 这种情况下，edge->getSrcNode()的类型是结构体或结构体数组。
+                        StructType* stType = dyn_cast<StructType>(elemType);
+                        s64_t idx = gepstmt->getConstantStructFldIdx();
+                        gep2byteoffset[edge] = regularStructVisit(stType, idx, edge, DL);
+                        // debugGEP(edge);
+                    }else{
+                        assert(false && "no other case 2"); // Unias分析kernel不会走到这里。
+                    }
                 }
             }
+        }else{
+            // 跑实验证明其实不太会跑到这个分支。
+            errs() << printVal(edge->getValue()) << "\n";
         }
     }
+    errs() << "[initialize] Finish collectByteoffset!\n";
     errs() << "gep2byteoffset Num: " << gep2byteoffset.size() << "\n";  // 1037227
     errs() << "variantGep Num: " << variantGep.size() << "\n";  // 33988
+
     // For debug. 只要Field-sensitivity或offset出问题，就从这里调试。验证每条GEP边的byteOffset是否正确。
     // for (const auto &entry : gep2byteoffset) {
     //     const PAGEdge *edge = entry.first;
@@ -894,7 +869,7 @@ void processCastMap(SVFIR* pag){
     for(auto edge : pag->getSVFStmtSet(PAGEdge::Copy)){
         if(auto srcType = edge->getSrcNode()->getType()){
             if(auto dstType = edge->getDstNode()->getType()){
-                if(srcType != dstType){
+                if(srcType && dstType && srcType != dstType){
                     castmap[getLLVMType(srcType)].emplace(getLLVMType(dstType));
                     castmap[getLLVMType(dstType)].emplace(getLLVMType(srcType));
                 }
@@ -980,227 +955,6 @@ void processArguments(int argc, char **argv, int &arg_num, char **arg_value,
     }
 }
 
-unsigned getStructOriginalElemNum(const StructType *stType) {
-    unsigned idx = 0;
-    const auto stInfo = SymbolTableInfo::SymbolInfo()->getTypeInfo(LLVMModuleSet::getLLVMModuleSet()->getSVFType(stType));
-    while(auto type = stInfo->getOriginalElemType(idx)) {
-        idx += 1;
-    }
-    return idx;
-}
-
-// [tool] 获取gepInst的第i个index的值（第一个index记作i=0）。
-int64_t getGepIndexValue(const GetElementPtrInst* gepInst, unsigned i) {
-    // assert(i < gepInst->getNumIndices() && "i >= gepInst->getNumIndices()");
-    if(i >= gepInst->getNumIndices()) return 0;
-    auto offsetVal = gepInst->getOperand(i+1); // 第 0 个操作数是基址指针
-    auto op = SVFUtil::dyn_cast<ConstantInt>(offsetVal);
-    auto idxVal = op->getSExtValue();
-    return idxVal;
-}
-
-// [tool] 用于根据Value获取其所在的Module。
-const llvm::Module* getModuleFromValue(const SVFValue *val) {
-    auto llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(val);
-    return getModuleFromValue(llvmVal);
-}
-const llvm::Module* getModuleFromValue(const Value *val) {
-    if (!val) {
-        return nullptr;
-    }
-    // 如果全局变量里有val的记录，则可直接返回结果。
-    if(value2Module.find(val) != value2Module.end()){
-        return value2Module[val];
-    } else {
-        // errs() << "not hit\n";
-        const llvm::Module* result = nullptr;
-        // TODO: LLVM IR中，全局变量声明里的getelementptr指令对应的Value没办法被下面的分支匹配。（不过这影响不大）
-        // 如果是 GlobalValue（包括 GlobalVariable, Function 等）
-        if (auto *global = dyn_cast<llvm::GlobalValue>(val)) {
-            // errs() << "hit gv\n";
-            result = global->getParent();
-        } 
-        // 如果是指令（Instruction）
-        else if (auto *inst = dyn_cast<llvm::Instruction>(val)) {
-            // errs() << "hit inst\n";
-            if (auto *F = inst->getFunction()) {
-                result = F->getParent();
-            }
-        }
-        // 如果是参数（Argument）
-        else if (auto *arg = dyn_cast<llvm::Argument>(val)) {
-            // errs() << "hit arg\n";
-            if (auto *F = arg->getParent()) {
-                result = F->getParent();
-            }
-        }
-        // 如果是基本块（BasicBlock）
-        else if (auto *bb = dyn_cast<llvm::BasicBlock>(val)) {
-            // errs() << "hit bb\n";
-            if (auto *F = bb->getParent()) {
-                result = F->getParent();
-            }
-        }
-        // 如果是全局变量的初始化表达式（ConstantExpr）
-        else if (auto *CE = dyn_cast<llvm::ConstantExpr>(val)) {
-            // errs() << "hit const expr\n";
-            if (GlobalVariable *GV = dyn_cast<GlobalVariable>(CE->getOperand(0))) {
-                result = GV->getParent();
-            }
-        }
-        if(result) value2Module.emplace(val, result); // 更新全局记录。
-        return result;
-    }
-}
-
-// [tool] 用于计算带padding的size。（Added by LHY）
-// 参数DL应为当前GV所在模块的DataLayout。
-u64_t getTypeSize(const DataLayout* DL, const Type* type) {
-    if(!DL) {
-        // errs() << "getTypeSize1: No DL!";
-        return 0;
-    }
-    // if the type has size then simply return it, otherwise just return 0
-    if(type->isSized()) {
-        // 取带padding的size有以下两个选择。个人感觉后者比较靠谱。
-        // return DL->getTypeStoreSize(const_cast<Type*>(type));
-        return DL->getTypeAllocSize(const_cast<Type*>(type));
-        // 为什么我这里返回的TypeSize没有使用getFixedSize()，也能转换成整型？
-    }
-    else {
-        // errs() << "getTypeSize1: Type is not sized!";
-        return 0;
-    }
-}
-u64_t getTypeSize(const DataLayout* DL, const StructType *sty, u32_t field_idx) {
-    if(!DL) {
-        // errs() << "getTypeSize2: No DL!";
-        return 0;
-    }
-    auto stAllSize = getTypeSize(DL, sty);
-    const StructLayout *stTySL = DL->getStructLayout( const_cast<StructType *>(sty) );
-    /// if this struct type does not have any element, i.e., opaque
-    if(sty->isOpaque()){
-        // errs() << "getTypeSize2: StructType is opaque!";
-        return 0;
-    }
-    else {
-        auto stOffsets = stTySL->getMemberOffsets();
-        if(field_idx >= stOffsets.size()) return 0; // 检查field_idx是否越界。
-        // return stTySL->getElementOffset(field_idx); // 按SVF的函数抄过来发现有问题，算size和offset是不同的。。。
-        // 分类讨论，结尾field单独处理。
-        if(field_idx!=stOffsets.size()-1){
-            auto tmp = stTySL->getElementOffset(field_idx+1) - stTySL->getElementOffset(field_idx);
-            return tmp;
-        } else {
-            // 处理结尾field。
-            auto tmp = stAllSize - stTySL->getElementOffset(field_idx);
-            return tmp;
-        }
-    }
-}
-u64_t getFieldOffset(const DataLayout* DL, const StructType *sty, u32_t field_idx) {
-    if(!DL) {
-        // errs() << "getTypeSize3: No DL!";
-        return 0;
-    }
-    const StructLayout *stTySL = DL->getStructLayout( const_cast<StructType *>(sty) );
-    if(sty->isOpaque()){
-        // errs() << "getTypeSize3: StructType is opaque!";
-        return 0;
-    }
-    else {
-        auto offsets = stTySL->getMemberOffsets();
-        if(field_idx >= offsets.size()) return 0;
-        return stTySL->getElementOffset(field_idx);
-    }
-}
-
-string printTypeWithSize(Type* type, const DataLayout& DL){
-    string res = "";
-    res += printType(type);
-    string tmp;
-    raw_string_ostream rso(tmp);
-    // DL.getTypeStoreSize(type).print(rso);
-    DL.getTypeAllocSize(type).print(rso);
-    res += (" (Size=" + tmp + ") ");
-    return res;
-}
-
-// [tool] 打印GV的全部类型信息，如果是结构体则打印其成员的类型、index及其offset。 
-void printGVType(SVFIR* pag, const SVFGlobalValue* gv) {
-    auto llvmGv = getLLVMGlobalVariable(gv);
-    printGVType(pag, llvmGv);
-}
-void printGVType(SVFIR* pag, const GlobalVariable* gv) {
-    auto curLayout = gv->getParent()->getDataLayout();
-    errs() << "GV Name: " << gv->getName().str() << "\n";
-    // errs() << "ValVar ID: " << pag->getValueNode(gv) << "\n";
-    // PAGNode* gvNode = pag->getGNode(pag->getValueNode(gv));
-    auto gvType = gv->getType();
-    auto elemType = gvType->getPointerElementType(); // 先去除LLVM IR给GV加的那层“指针”类型。
-    errs() << "Original Type: " << printTypeWithSize(elemType, curLayout) << "\n";
-    while(elemType && elemType->isArrayTy()){ // 去除“数组”类型的包裹。
-        elemType = elemType->getArrayElementType();
-    }
-    errs() << "Stripped Type: " << printTypeWithSize(elemType, curLayout) << "\n";
-    if(elemType->isSingleValueType()){
-        errs() << "[Single Value Type]" << "\n";
-    }else if (elemType->isStructTy()){
-        errs() << "[Struct Type]" << "\n";
-        StructType* stType = dyn_cast<StructType>(elemType);
-        unsigned long stSize = getTypeSize(&curLayout, stType);//curLayout.getTypeAllocSize(stType).getFixedSize();
-        auto stLayout = curLayout.getStructLayout(stType);
-        auto stOffsets = stLayout->getMemberOffsets();
-        errs() << "StructLayout: " << stOffsets.size() << " (offsets below)" << "\n";
-        for (auto i : stOffsets){
-            errs() << "\t" << i << "\n";
-        }
-        const auto stInfo = SymbolTableInfo::SymbolInfo()->getTypeInfo(LLVMModuleSet::getLLVMModuleSet()->getSVFType(stType));;
-        // stInfo包含OriginalElem、FlattenedElem、FlattenedField的信息，分别遍历输出。
-        errs() << "OriginalElem: " << getStructOriginalElemNum(stType) << " (sizes below)" << "\n";
-        unsigned long idx = 0;
-        unsigned long sizeCnt = 0;
-        while(auto i = stInfo->getOriginalElemType(idx)){
-            auto tmp = getTypeSize(&curLayout, stType, idx);//curLayout.getTypeAllocSize(const_cast<Type*>(i)).getFixedSize();
-            errs() << '\t' << tmp << " (" << printType(i) << ")\n";
-            sizeCnt += tmp;
-            idx++;
-        }
-        assert(sizeCnt == stSize && "OriginalElem Size Mismatch");
-        // errs() << "FlattenedElem: " << stInfo->getNumOfFlattenElements() << "\n";
-        // for (auto i : stInfo->getFlattenElementTypes()) {
-        //     errs() << '\t' << printType(i) << "\n";
-        // }
-        // errs() << "FlattenedField: " << stInfo->getNumOfFlattenFields() << "\n";
-        // for (auto i : stInfo->getFlattenFieldTypes()) {
-        //     errs() << '\t' << printType(i) << "\n";
-        // }
-    }
-    errs() << "\n";
-}
-
-// 筛选内核中的初始化函数，用于辅助判断是否protectable
-static llvm::cl::opt<std::string> InputNewInitFuncs("InputNewInitFuncs",
-    llvm::cl::desc("Input the new init functions"), llvm::cl::init(""));
-
-unordered_set<string> NewInitFuncstr;
-
-void getNewInitFuncs(){
-    if(InputNewInitFuncs.size() == 0) {
-        InputNewInitFuncs = "/mnt/sdc/lhy_tmp/spa/Uniasss/analyze/Linux-5.14-NewInitFunctions";
-    }
-    ifstream fin(InputNewInitFuncs);
-    string tmp;
-    while(!fin.eof()){
-        fin >> tmp;
-        NewInitFuncstr.insert(tmp);
-    }
-    fin.close();
-    errs() << "NewInitFuncs: " << NewInitFuncstr.size() << "\n";
-}
-
-
 // 判断一个变量节点是否可保护，即在init外有读写。
 bool checkIfProtectable(PAGNode* pagnode){
     for(auto edge : pagnode->getIncomingEdges(PAGEdge::Store)){
@@ -1225,54 +979,3 @@ bool pairCompare(const std::pair<s64_t, std::string>& a, const std::pair<s64_t, 
     return a.first < b.first;  // 否则按值从小到大排序
 }
 
-// 
-// For conversion.
-// 
-
-const Type* getLLVMType(const SVFType* tp) {
-    auto llvmType = LLVMModuleSet::getLLVMModuleSet()->getLLVMType(tp);
-    return llvmType;
-}
-
-const Value* getLLVMValue(const SVFValue* val) {
-    auto llvmValue = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(val);
-    return llvmValue;
-}
-
-const SVFType* getSVFType(const Type* tp) {
-    auto svfType = LLVMModuleSet::getLLVMModuleSet()->getSVFType(tp);
-    return svfType;
-}
-
-const SVFValue* getSVFValue(const Value* val) {
-    auto svfValue = LLVMModuleSet::getLLVMModuleSet()->getSVFValue(val);
-    return svfValue;
-}
-
-// Note: 这里把SVFGlobalValue转化成GlobalVariable有两点要注意。
-// 1. 传入的gv参数需要来源于SVFModule::GlobalSet，否则dyn_cast这步会返回Null。
-// 2. 由于该函数使用了getGlobalRep，可能多个不同SVFGlobalValue映射到一个GlobalVariable。（暂时弃用，后续再引入）
-const GlobalVariable* getLLVMGlobalVariable(const SVFGlobalValue* gv) {
-    auto llvmValue = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(gv);
-    // auto gvRepValue = LLVMUtil::getGlobalRep(llvmValue);
-    auto llvmGv = dyn_cast<GlobalVariable>(llvmValue); // llvmValue->stripPointerCasts()
-    return llvmGv;
-}
-
-const Function* getLLVMFunction(const SVFFunction* func) {
-    auto llvmValue = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(func);
-    auto llvmFunc = LLVMUtil::getLLVMFunction(llvmValue);
-    return llvmFunc;
-}
-
-const llvm::Instruction* getLLVMInstruction(const SVFInstruction* inst) {
-    auto llvmValue = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(inst);
-    auto llvmInst = dyn_cast<Instruction>(llvmValue); // llvmValue->stripPointerCasts()
-    return llvmInst;
-}
-
-const llvm::CallInst *getLLVMCallInst(const SVFCallInst *inst) {
-    auto llvmValue = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(inst);
-    auto llvmInst = dyn_cast<CallInst>(llvmValue); // llvmValue->stripPointerCasts()
-    return llvmInst;
-}

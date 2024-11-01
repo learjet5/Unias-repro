@@ -2,8 +2,10 @@
 #define ALGO_H
 #include <unordered_map>
 #include <unordered_set>
-#include "Util.hpp"
 #include "llvm/IR/DataLayout.h"
+
+#include "Util.hpp"
+#include "UtilLLVM.hpp"
 
 using namespace SVF;
 using namespace std;
