@@ -4,12 +4,17 @@ This repository aims to reproduce and optimize the implementation of the paper "
 
 ## Environment
 
-- [SVF-2.8](https://github.com/SVF-tools/SVF/releases/tag/SVF-2.8)
+- [SVF-2.8 (customized version)](https://github.com/learjet5/SVF-for-Linux-Kernel)
 - [LLVM-14.0.6](https://github.com/llvm/llvm-project/releases/tag/llvmorg-14.0.6)
 
 Note that: 
-- In order to better utilize the advantages of SVF, we choose the newer SVF version than the paper.
-- We applied extra patches to SVF-2.8 Release code.
+- To better utilize the advantages of SVF, we choose the newer SVF version than the paper (which is SVF-2.5).
+- To conduct static analysis for Linux kernel, we applied extra patches to [SVF-2.8 Release](https://github.com/SVF-tools/SVF/releases/tag/SVF-2.8) code (seen in [link](https://github.com/learjet5/SVF-for-Linux-Kernel)).
+
+
+## How to build LLVM bitcode
+
+TBD
 
 ---
 

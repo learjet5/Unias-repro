@@ -463,19 +463,18 @@ int main(int argc, char **argv) {
     errs() << "Finish initialize!\n\n"; errs().flush();
 
     // Obtain the analysis scope.
-    // getAnalysisScope(svfModule); // All GVs.
-    getExistingAnalysisScope(svfModule);
-    getNewInitFuncs();
-    
-    // For single GV debug.
-    // if(SpecificGV()=="") {
-    //     errs() << "No GV is specified!\n";
-    //     return 1;
-    // }
-    // if(!getSpecificGV(svfModule, SpecificGV())) {
-    //     errs() << "No such GV is found!\n";
-    //     return 1;
-    // }
+    if(SpecificGV()=="") {
+        // 批量化分析。
+        // getAnalysisScope(svfModule); // All GVs.
+        getExistingAnalysisScope(svfModule);
+        getNewInitFuncs();
+    } else {
+        // 单一GV分析。
+        if(!getSpecificGV(svfModule, SpecificGV())) {
+            errs() << "[getSpecificGV] Fail to find specified GV!\n";
+            return 1;
+        }
+    }
 
     errs() << "\n[Analysis Phase] Analysis Scope: " << analysisScope.size() << "\n"; errs().flush();
     

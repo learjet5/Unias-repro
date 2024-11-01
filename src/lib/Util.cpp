@@ -402,7 +402,7 @@ void handleAnonymousStruct(SVFModule* svfModule, SVFIR* pag){
 // [tool] 用于collectByteoffset。
 // 
 long varStructVisit(GEPOperator* gepop, const DataLayout* DL){
-    errs() << "  [varStructVisit]\n";
+    // errs() << "  [varStructVisit]\n";
     if(!DL) {
         errs() << "varStructVisit: DataLayout is not available!\n";
     }
@@ -443,7 +443,7 @@ long varStructVisit(GEPOperator* gepop, const DataLayout* DL){
 // 根据给定GEP边的结构体类型和成员index，计算其byteOffset并返回。
 // 重点重构对象！
 long regularStructVisit(StructType* sttype, s64_t idx, PAGEdge* gep, const DataLayout* DL){
-    errs() << "  [regularStructVisit]\n";
+    // errs() << "  [regularStructVisit]\n";
     if(!DL) {
         errs() << "regularStructVisit: DataLayout is not available!\n"; // Triggered.
     }
@@ -587,7 +587,7 @@ void collectByteoffset(SVFIR* pag){
     // 遍历PAG中的所有GEP边。将其转化为对应的LLVMInstruction并进行相关处理。
     // errs() << "[collectByteoffset] GEP Edges size: " << pag->getSVFStmtSet(PAGEdge::Gep).size() << "\n";
     for(auto const edge : pag->getSVFStmtSet(PAGEdge::Gep)){
-        errs() << "[collectByteoffset] Cur GEP: " << edge->getEdgeID() << "\n";
+        // errs() << "[collectByteoffset] Cur GEP: " << edge->getEdgeID() << "\n";
         // 此处PAGEdge edge其实都应该是GepStmt类型。
         const auto gepstmt = dyn_cast<GepStmt>(edge);
         if(!gepstmt){
